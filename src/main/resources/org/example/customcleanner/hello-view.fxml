@@ -20,6 +20,13 @@
             </font>
         </Label>
 
+        <HBox spacing="10" alignment="CENTER">
+            <CheckBox fx:id="tempCheck" text="Archivos Temporales" selected="true"/>
+            <CheckBox fx:id="prefetchCheck" text="Prefetch" selected="true"/>
+            <CheckBox fx:id="downloadsCheck" text="Descargas" selected="true"/>
+            <CheckBox fx:id="recycleCheck" text="Papelera" selected="true"/>
+        </HBox>
+
         <ProgressBar fx:id="progressBar" prefWidth="400.0" progress="0.0"
                      style="-fx-accent: #4CAF50;"/>
 

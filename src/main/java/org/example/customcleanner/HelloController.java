@@ -5,7 +5,6 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
-import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.effect.DropShadow;
@@ -13,36 +12,39 @@ import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.util.Duration;
+import org.example.customcleanner.model.FileItem;
+import org.example.customcleanner.service.FileScanner;
+import org.example.customcleanner.util.FileUtils;
+
 import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
-import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class HelloController {
-    @FXML
-    private VBox mainContainer;
-    @FXML
-    private Label welcomeText;
-    @FXML
-    private Button scanButton;
-    @FXML
-    private Button cleanButton;
-    @FXML
-    private Label statusLabel;
-    @FXML
-    private ProgressBar progressBar;
-    @FXML
-    private TableView<FileItem> fileTable;
-    @FXML
-    private Label totalSizeLabel;
-    @FXML
-    private Pane animationPane;
+    @FXML private VBox mainContainer;
+    @FXML private Label welcomeText;
+    @FXML private Button scanButton;
+    @FXML private Button cleanButton;
+    @FXML private Label statusLabel;
+    @FXML private ProgressBar progressBar;
+    @FXML private TableView<FileItem> fileTable;
+    @FXML private Label totalSizeLabel;
+    @FXML private Pane animationPane;
+    @FXML private CheckBox tempCheck;
+    @FXML private CheckBox prefetchCheck;
+    @FXML private CheckBox downloadsCheck;
+    @FXML private CheckBox recycleCheck;
 
     private ObservableList<FileItem> fileItems = FXCollections.observableArrayList();
     private Timeline scanAnimation;
     private List<Circle> backgroundCircles = new ArrayList<>();
+    private final FileScanner fileScanner = new FileScanner();
+    private final ExecutorService executorService = Executors.newFixedThreadPool(4);
 
     @FXML
     public void initialize() {
@@ -58,13 +60,11 @@ public class HelloController {
         progressBar.setProgress(0);
         statusLabel.setText("Listo para iniciar");
 
-        // Aplicar efectos visuales
         DropShadow shadow = new DropShadow();
         shadow.setColor(Color.rgb(0, 0, 0, 0.3));
         shadow.setRadius(10);
         mainContainer.setEffect(shadow);
 
-        // Estilo para los botones
         String buttonStyle = "-fx-background-radius: 20; -fx-padding: 10 20;";
         scanButton.setStyle(scanButton.getStyle() + buttonStyle);
         cleanButton.setStyle(cleanButton.getStyle() + buttonStyle);
@@ -84,6 +84,9 @@ public class HelloController {
         TableColumn<FileItem, String> sizeCol = new TableColumn<>("Tamaño");
         sizeCol.setCellValueFactory(param -> param.getValue().sizeProperty());
 
+        TableColumn<FileItem, String> typeCol = new TableColumn<>("Tipo");
+        typeCol.setCellValueFactory(param -> param.getValue().typeProperty());
+
         TableColumn<FileItem, Void> actionCol = new TableColumn<>("Acciones");
         actionCol.setCellFactory(param -> new TableCell<>() {
             private final Button openButton = new Button("Abrir ubicación");
@@ -100,18 +103,12 @@ public class HelloController {
             @Override
             protected void updateItem(Void item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty) {
-                    setGraphic(null);
-                } else {
-                    setGraphic(openButton);
-                }
+                setGraphic(empty ? null : openButton);
             }
         });
 
-        fileTable.getColumns().addAll(selectCol, nameCol, pathCol, sizeCol, actionCol);
+        fileTable.getColumns().addAll(selectCol, nameCol, pathCol, sizeCol, typeCol, actionCol);
         fileTable.setItems(fileItems);
-
-        // Actualizar el total cuando cambia la selección
         fileItems.addListener((javafx.collections.ListChangeListener<FileItem>) c -> updateTotalSize());
     }
 
@@ -123,17 +120,19 @@ public class HelloController {
             backgroundCircles.add(circle);
             animationPane.getChildren().add(circle);
 
-            // Animación de movimiento
             Timeline timeline = new Timeline(
-                    new KeyFrame(Duration.ZERO, new KeyValue(circle.layoutXProperty(), Math.random() * animationPane.getWidth())),
-                    new KeyFrame(Duration.ZERO, new KeyValue(circle.layoutYProperty(), Math.random() * animationPane.getHeight())),
-                    new KeyFrame(Duration.seconds(10), new KeyValue(circle.layoutXProperty(), Math.random() * animationPane.getWidth())),
-                    new KeyFrame(Duration.seconds(10), new KeyValue(circle.layoutYProperty(), Math.random() * animationPane.getHeight()))
+                    new KeyFrame(Duration.ZERO,
+                            new KeyValue(circle.layoutXProperty(), Math.random() * animationPane.getWidth()),
+                            new KeyValue(circle.layoutYProperty(), Math.random() * animationPane.getHeight())
+                    ),
+                    new KeyFrame(Duration.seconds(10),
+                            new KeyValue(circle.layoutXProperty(), Math.random() * animationPane.getWidth()),
+                            new KeyValue(circle.layoutYProperty(), Math.random() * animationPane.getHeight())
+                    )
             );
             timeline.setCycleCount(Timeline.INDEFINITE);
             timeline.play();
 
-            // Animación de tamaño
             Timeline pulseTimeline = new Timeline(
                     new KeyFrame(Duration.ZERO, new KeyValue(circle.radiusProperty(), 5)),
                     new KeyFrame(Duration.seconds(2), new KeyValue(circle.radiusProperty(), 10)),
@@ -142,111 +141,6 @@ public class HelloController {
             pulseTimeline.setCycleCount(Timeline.INDEFINITE);
             pulseTimeline.play();
         }
-    }
-
-    @FXML
-    protected void onScanButtonClick() {
-        fileItems.clear();
-        scanButton.setDisable(true);
-        cleanButton.setDisable(true);
-        statusLabel.setText("Escaneando archivos...");
-        progressBar.setProgress(0);
-
-        Thread scanThread = new Thread(this::scanFiles);
-        scanThread.start();
-    }
-
-    private void scanFiles() {
-        List<File> files = findJunkFiles();
-        double totalSize = 0;
-
-        for (File file : files) {
-            FileItem item = new FileItem(
-                    file.getName(),
-                    file.getAbsolutePath(),
-                    formatFileSize(file.length()),
-                    true
-            );
-            Platform.runLater(() -> fileItems.add(item));
-            totalSize += file.length();
-        }
-
-        final double finalTotalSize = totalSize;
-        Platform.runLater(() -> {
-            statusLabel.setText("Escaneo completado. Se encontraron " + files.size() + " archivos.");
-            totalSizeLabel.setText("Tamaño total: " + formatFileSize(finalTotalSize));
-            scanButton.setDisable(false);
-            cleanButton.setDisable(false);
-            progressBar.setProgress(1.0);
-        });
-    }
-
-    @FXML
-    protected void onCleanButtonClick() {
-        List<File> filesToDelete = new ArrayList<>();
-        for (FileItem item : fileItems) {
-            if (item.isSelected()) {
-                filesToDelete.add(new File(item.getPath()));
-            }
-        }
-
-        Thread cleanThread = new Thread(() -> {
-            int deletedCount = 0;
-            for (File file : filesToDelete) {
-                if (file.delete()) {
-                    deletedCount++;
-                }
-            }
-
-            final int finalCount = deletedCount;
-            Platform.runLater(() -> {
-                statusLabel.setText("Se eliminaron " + finalCount + " archivos");
-                fileItems.removeIf(FileItem::isSelected);
-                updateTotalSize();
-            });
-        });
-        cleanThread.start();
-    }
-
-    private void updateTotalSize() {
-        double totalSize = 0;
-        for (FileItem item : fileItems) {
-            if (item.isSelected()) {
-                String sizeStr = item.getSize().replaceAll("[^0-9.]", "");
-                try {
-                    totalSize += Double.parseDouble(sizeStr);
-                } catch (NumberFormatException e) {
-                    // Ignorar errores de parseo
-                }
-            }
-        }
-        totalSizeLabel.setText("Tamaño total seleccionado: " + formatFileSize(totalSize));
-    }
-
-    private void openFileLocation(File file) {
-        try {
-            Desktop.getDesktop().open(file.getParentFile());
-        } catch (IOException e) {
-            showError("No se pudo abrir la ubicación del archivo");
-        }
-    }
-
-    private String formatFileSize(double size) {
-        String[] units = {"B", "KB", "MB", "GB"};
-        int unitIndex = 0;
-        while (size >= 1024 && unitIndex < units.length - 1) {
-            size /= 1024;
-            unitIndex++;
-        }
-        DecimalFormat df = new DecimalFormat("#.##");
-        return df.format(size) + " " + units[unitIndex];
-    }
-
-    private void showError(String message) {
-        Alert alert = new Alert(Alert.AlertType.ERROR);
-        alert.setTitle("Error");
-        alert.setContentText(message);
-        alert.showAndWait();
     }
 
     private void setupAnimations() {
@@ -265,87 +159,142 @@ public class HelloController {
         scanAnimation.setCycleCount(Timeline.INDEFINITE);
 
         // Animación para los botones
-        scanButton.setOnMouseEntered(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(200), scanButton);
+        setupButtonAnimation(scanButton);
+        setupButtonAnimation(cleanButton);
+    }
+
+    private void setupButtonAnimation(Button button) {
+        button.setOnMouseEntered(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(200), button);
             st.setToX(1.1);
             st.setToY(1.1);
             st.play();
         });
 
-        scanButton.setOnMouseExited(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(200), scanButton);
-            st.setToX(1);
-            st.setToY(1);
-            st.play();
-        });
-
-        cleanButton.setOnMouseEntered(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(200), cleanButton);
-            st.setToX(1.1);
-            st.setToY(1.1);
-            st.play();
-        });
-
-        cleanButton.setOnMouseExited(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(200), cleanButton);
+        button.setOnMouseExited(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(200), button);
             st.setToX(1);
             st.setToY(1);
             st.play();
         });
     }
 
-    private List<File> findJunkFiles() {
-        List<File> junkFiles = new ArrayList<>();
+    @FXML
+    protected void onScanButtonClick() {
+        fileItems.clear();
+        scanButton.setDisable(true);
+        cleanButton.setDisable(true);
+        statusLabel.setText("Escaneando archivos...");
+        progressBar.setProgress(0);
 
-        // Directorios comunes donde buscar archivos temporales
-        String[] locations = {
-                System.getProperty("java.io.tmpdir"),
-                System.getProperty("user.home") + "/AppData/Local/Temp",
-                System.getProperty("user.home") + "/Downloads",
-                System.getProperty("user.home") + "/Documents",
-                "C:/Windows/Temp"
-        };
+        List<CompletableFuture<List<FileItem>>> futures = new ArrayList<>();
 
-        for (String location : locations) {
-            File directory = new File(location);
-            if (directory.exists()) {
-                searchJunkFilesInDirectory(directory, junkFiles);
-            }
+        if (tempCheck.isSelected()) {
+            futures.add(CompletableFuture.supplyAsync(() -> fileScanner.scanFiles("TEMP"), executorService));
+        }
+        if (prefetchCheck.isSelected()) {
+            futures.add(CompletableFuture.supplyAsync(() -> fileScanner.scanFiles("PREFETCH"), executorService));
+        }
+        if (downloadsCheck.isSelected()) {
+            futures.add(CompletableFuture.supplyAsync(() -> fileScanner.scanFiles("DOWNLOADS"), executorService));
+        }
+        if (recycleCheck.isSelected()) {
+            futures.add(CompletableFuture.supplyAsync(() -> fileScanner.scanFiles("RECYCLE"), executorService));
         }
 
-        return junkFiles;
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenAccept(v -> {
+                    List<FileItem> allFiles = new ArrayList<>();
+                    futures.forEach(f -> {
+                        try {
+                            allFiles.addAll(f.get());
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    });
+
+                    Platform.runLater(() -> {
+                        fileItems.addAll(allFiles);
+                        statusLabel.setText("Escaneo completado. Se encontraron " + allFiles.size() + " archivos.");
+                        scanButton.setDisable(false);
+                        cleanButton.setDisable(false);
+                        progressBar.setProgress(1.0);
+                        updateTotalSize();
+                    });
+                });
     }
 
-    private void searchJunkFilesInDirectory(File directory, List<File> junkFiles) {
-        File[] files = directory.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                if (file.isFile() && isJunkFile(file)) {
-                    junkFiles.add(file);
-                }
+    @FXML
+    protected void onCleanButtonClick() {
+        List<FileItem> selectedItems = new ArrayList<>();
+        for (FileItem item : fileItems) {
+            if (item.isSelected()) {
+                selectedItems.add(item);
             }
+        }
+
+        Alert confirmDialog = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmDialog.setTitle("Confirmar eliminación");
+        confirmDialog.setHeaderText("¿Está seguro de que desea eliminar los archivos seleccionados?");
+        confirmDialog.setContentText("Esta acción no se puede deshacer.");
+
+        confirmDialog.showAndWait().ifPresent(response -> {
+            if (response == ButtonType.OK) {
+                CompletableFuture.runAsync(() -> {
+                    int deletedCount = 0;
+                    for (FileItem item : selectedItems) {
+                        File file = new File(item.getPath());
+                        if (file.exists()) {
+                            try {
+                                if (file.delete()) {
+                                    deletedCount++;
+                                }
+                            } catch (SecurityException e) {
+                                Platform.runLater(() -> showError("No se pudo eliminar el archivo: " + file.getName()));
+                            }
+                        }
+                    }
+
+                    final int finalCount = deletedCount;
+                    Platform.runLater(() -> {
+                        statusLabel.setText("Se eliminaron " + finalCount + " archivos");
+                        fileItems.removeAll(selectedItems);
+                        updateTotalSize();
+                    });
+                }, executorService);
+            }
+        });
+    }
+
+    private void updateTotalSize() {
+        double totalSize = fileItems.stream()
+                .filter(FileItem::isSelected)
+                .mapToDouble(item -> {
+                    String sizeStr = item.getSize().replaceAll("[^0-9.]", "");
+                    try {
+                        return Double.parseDouble(sizeStr);
+                    } catch (NumberFormatException e) {
+                        return 0;
+                    }
+                })
+                .sum();
+
+        totalSizeLabel.setText("Tamaño total seleccionado: " + FileUtils.formatFileSize(totalSize));
+        cleanButton.setDisable(fileItems.stream().noneMatch(FileItem::isSelected));
+    }
+
+    private void openFileLocation(File file) {
+        try {
+            Desktop.getDesktop().open(file.getParentFile());
+        } catch (IOException e) {
+            showError("No se pudo abrir la ubicación del archivo");
         }
     }
 
-    private boolean isJunkFile(File file) {
-        String name = file.getName().toLowerCase();
-        // Extensiones comunes de archivos temporales o de respaldo
-        String[] junkExtensions = {
-                ".tmp", ".temp", ".log", ".old", ".bak",
-                ".chk", ".gid", ".prv", ".~mp", ".dmp",
-                ".part", ".crdownload", ".download"
-        };
-
-        for (String ext : junkExtensions) {
-            if (name.endsWith(ext)) {
-                return true;
-            }
-        }
-
-        // Patrones comunes de archivos temporales
-        return name.startsWith("~$") || // Archivos temporales de Office
-                name.matches("^[~].*") || // Archivos que empiezan con ~
-                name.matches(".*[.][0-9]+$") || // Archivos que terminan en números
-                name.matches("^[0-9a-f]{8}$"); // Archivos con nombres hexadecimales
+    private void showError(String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle("Error");
+        alert.setContentText(message);
+        alert.showAndWait();
     }
 }
